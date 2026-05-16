@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 const SUPABASE_URL = "https://lcpbwrwecoqgunpqpkyy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_qo-7309mscYIWMDvM_lfFA_jOsyST58";
 
+// ── Supabase REST client ──────────────────────────────────────────────────────
 const sb = {
   async query(path, opts = {}) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -23,8 +24,41 @@ const sb = {
   post:   (path, body) => sb.query(path, { method: "POST",   body: JSON.stringify(body) }),
   patch:  (path, body) => sb.query(path, { method: "PATCH",  body: JSON.stringify(body), prefer: "return=representation" }),
   delete: (path)       => sb.query(path, { method: "DELETE", prefer: "return=minimal" }),
+
+  // Upload file to Supabase Storage, returns public URL
+  async uploadPhoto(file) {
+    const ext  = file.name.split(".").pop() || "jpg";
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    const res  = await fetch(`${SUPABASE_URL}/storage/v1/object/photos/${path}`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": file.type || "image/jpeg",
+        "x-upsert": "true",
+      },
+      body: file,
+    });
+    if (!res.ok) { const err = await res.text(); throw new Error(err); }
+    return {
+      path,
+      url: `${SUPABASE_URL}/storage/v1/object/public/photos/${path}`,
+    };
+  },
+
+  async deletePhoto(storagePath) {
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/photos/${storagePath}`, {
+      method: "DELETE",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+      },
+    });
+    return res.ok;
+  },
 };
 
+// ── Dark iOS palette ──────────────────────────────────────────────────────────
 const C = {
   bg:             "#000000",
   bg2:            "#1C1C1E",
@@ -42,13 +76,18 @@ const C = {
 const TOTE_COLORS = ["#30D158","#0A84FF","#FF9F0A","#FF453A","#BF5AF2","#FF375F","#64D2FF","#FFD60A"];
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', sans-serif";
 
+// ── QR Code ───────────────────────────────────────────────────────────────────
 function QRCode({ value, size = 200 }) {
   const ref = useRef();
   useEffect(() => {
     if (!ref.current || !value) return;
     const render = () => {
       ref.current.innerHTML = "";
-      new window.QRCode(ref.current, { text: value, width: size, height: size, colorDark: "#000000", colorLight: "#ffffff", correctLevel: window.QRCode.CorrectLevel.M });
+      new window.QRCode(ref.current, {
+        text: value, width: size, height: size,
+        colorDark: "#000000", colorLight: "#ffffff",
+        correctLevel: window.QRCode.CorrectLevel.M,
+      });
     };
     if (window.QRCode) { render(); return; }
     const s = document.createElement("script");
@@ -59,6 +98,7 @@ function QRCode({ value, size = 200 }) {
   return <div ref={ref} style={{ width: size, height: size, borderRadius: 8, overflow: "hidden" }} />;
 }
 
+// ── Spinner ───────────────────────────────────────────────────────────────────
 function Spinner({ small }) {
   const sz = small ? 18 : 36;
   return (
@@ -69,24 +109,25 @@ function Spinner({ small }) {
   );
 }
 
+// ── Tote Viewer (public, via QR scan) ────────────────────────────────────────
 function ToteViewer({ toteId }) {
-  const [tote, setTote]     = useState(null);
-  const [photos, setPhotos] = useState([]);
+  const [tote,    setTote]    = useState(null);
+  const [photos,  setPhotos]  = useState([]);
   const [loading, setLoading] = useState(true);
-  const [lightbox, setLightbox] = useState(null);
+  const [lightbox,setLightbox]= useState(null);
 
   useEffect(() => {
     (async () => {
       try {
-        console.log("ToteViewer: fetching tote", toteId);
         const rows = await sb.get(`totes?id=eq.${toteId}&select=*`);
-        console.log("ToteViewer: tote rows", rows);
         if (!rows || rows.length === 0) { setLoading(false); return; }
         setTote(rows[0]);
-        const p = await sb.get(`photos?tote_id=eq.${toteId}&order=created_at.asc`);
-        console.log("ToteViewer: photos", p);
-        setPhotos(p || []);
-      } catch (e) { console.error("ToteViewer error:", e); }
+        const p = await sb.get(`photos?tote_id=eq.${toteId}&select=id,caption,storage_path,name&order=created_at.asc`);
+        setPhotos((p || []).map(photo => ({
+          ...photo,
+          url: `${SUPABASE_URL}/storage/v1/object/public/photos/${photo.storage_path}`,
+        })));
+      } catch (e) { console.error(e); }
       setLoading(false);
     })();
   }, [toteId]);
@@ -105,7 +146,7 @@ function ToteViewer({ toteId }) {
     <div style={base}>
       {lightbox !== null && (
         <div onClick={() => setLightbox(null)} style={{ position:"fixed", inset:0, background:"#000000F0", zIndex:999, display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <img src={photos[lightbox].data} style={{ maxWidth:"92vw", maxHeight:"88vh", borderRadius:12, objectFit:"contain" }} alt="" />
+          <img src={photos[lightbox].url} style={{ maxWidth:"92vw", maxHeight:"88vh", borderRadius:12, objectFit:"contain" }} alt="" />
           <div style={{ position:"absolute", top:20, right:20, color:"#fff", width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(255,255,255,0.12)", borderRadius:"50%", cursor:"pointer" }}>✕</div>
         </div>
       )}
@@ -117,20 +158,23 @@ function ToteViewer({ toteId }) {
       <div style={{ padding:"16px 0 40px" }}>
         {photos.length === 0
           ? <div style={{ textAlign:"center", padding:"60px 0", color:C.tertiaryLabel, fontSize:15 }}>No photos in this tote.</div>
-          : <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:2 }}>
+          : (
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:2 }}>
               {photos.map((p,i) => (
                 <div key={p.id} onClick={() => setLightbox(i)} style={{ aspectRatio:"1", overflow:"hidden", cursor:"pointer", position:"relative" }}>
-                  <img src={p.data} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} alt={p.caption||""} />
+                  <img src={p.url} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} alt={p.caption||""} />
                   {p.caption && <div style={{ position:"absolute", bottom:0, left:0, right:0, background:"linear-gradient(transparent,rgba(0,0,0,0.7))", padding:"18px 6px 6px", fontSize:11, color:"#fff", fontWeight:500 }}>{p.caption}</div>}
                 </div>
               ))}
             </div>
+          )
         }
       </div>
     </div>
   );
 }
 
+// ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [totes,          setTotes]          = useState([]);
   const [screen,         setScreen]         = useState("list");
@@ -153,83 +197,94 @@ export default function App() {
   const baseUrl = window.location.href.split("?")[0];
   const current = totes.find((t) => t.id === activeToteId);
 
-  // Load totes
+  // Load totes list
   useEffect(() => {
     (async () => {
       try {
-        console.log("App: loading totes");
         const data = await sb.get("totes?select=*&order=created_at.asc");
-        console.log("App: totes loaded", data);
         setTotes(data || []);
-      } catch (e) { console.error("App: totes error", e); }
+      } catch (e) { console.error("totes error:", e); }
       setLoading(false);
     })();
   }, []);
 
-  // Load photos when tote changes
+  // Load photos when active tote changes — only fetch metadata, not image data
   useEffect(() => {
     if (!activeToteId) return;
     setPhotos([]);
     (async () => {
       try {
-        console.log("App: loading photos for tote", activeToteId);
-        const data = await sb.get(`photos?tote_id=eq.${activeToteId}&order=created_at.asc`);
-        console.log("App: photos loaded", data);
-        setPhotos(data || []);
-      } catch (e) { console.error("App: photos error", e); }
+        const data = await sb.get(`photos?tote_id=eq.${activeToteId}&select=id,caption,storage_path,name&order=created_at.asc`);
+        setPhotos((data || []).map(p => ({
+          ...p,
+          url: `${SUPABASE_URL}/storage/v1/object/public/photos/${p.storage_path}`,
+        })));
+      } catch (e) { console.error("photos error:", e); }
     })();
   }, [activeToteId]);
 
+  // ── Actions ──────────────────────────────────────────────────────────────────
   async function addTote() {
     if (!newName.trim()) return;
     setSaving(true);
     try {
-      const color = TOTE_COLORS[totes.length % TOTE_COLORS.length];
+      const color   = TOTE_COLORS[totes.length % TOTE_COLORS.length];
       const [created] = await sb.post("totes", { name: newName.trim(), note: newNote.trim(), color });
       setTotes((prev) => [...prev, created]);
       setNewName(""); setNewNote("");
       setActiveToteId(created.id);
       setPhotos([]);
       setScreen("detail");
-    } catch (e) { alert("Error: " + e.message); }
+    } catch (e) { alert("Error creating tote: " + e.message); }
     setSaving(false);
   }
 
   async function deleteTote(id) {
     if (!confirm("Delete this tote and all its photos?")) return;
     try {
+      // Delete storage files first
+      const toDelete = photos.filter(p => p.storage_path);
+      await Promise.all(toDelete.map(p => sb.deletePhoto(p.storage_path)));
       await sb.delete(`totes?id=eq.${id}`);
       setTotes((prev) => prev.filter((t) => t.id !== id));
       setScreen("list");
     } catch (e) { alert("Error: " + e.message); }
   }
 
-  function handleFiles(e) {
+  async function handleFiles(e) {
     const files = Array.from(e.target.files);
     if (!files.length) return;
     setUploading(true);
     let done = 0;
-    files.forEach((f) => {
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        try {
-          console.log("Uploading photo", f.name, "to tote", activeToteId);
-          const [photo] = await sb.post("photos", { tote_id: activeToteId, data: ev.target.result, name: f.name, caption: "" });
-          console.log("Photo saved", photo);
-          setPhotos((prev) => [...prev, photo]);
-        } catch (err) { console.error("Upload error:", err); }
-        done++;
-        if (done === files.length) setUploading(false);
-      };
-      reader.readAsDataURL(f);
-    });
+    for (const file of files) {
+      try {
+        // 1. Upload file to Storage
+        const { path, url } = await sb.uploadPhoto(file);
+        // 2. Save metadata row (no base64 — just the path)
+        const [photo] = await sb.post("photos", {
+          tote_id:      activeToteId,
+          storage_path: path,
+          name:         file.name,
+          caption:      "",
+          data:         "", // keep column happy
+        });
+        // 3. Show immediately
+        setPhotos((prev) => [...prev, { ...photo, url }]);
+      } catch (err) {
+        console.error("Upload error:", err);
+        alert("Failed to upload " + file.name + ": " + err.message);
+      }
+      done++;
+      if (done === files.length) setUploading(false);
+    }
     e.target.value = "";
   }
 
-  async function removePhoto(id) {
+  async function removePhoto(photo) {
     try {
-      await sb.delete(`photos?id=eq.${id}`);
-      setPhotos((prev) => prev.filter((p) => p.id !== id));
+      if (photo.storage_path) await sb.deletePhoto(photo.storage_path);
+      await sb.delete(`photos?id=eq.${photo.id}`);
+      setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
     } catch (e) { alert("Error: " + e.message); }
     setLightbox(null);
   }
@@ -243,7 +298,7 @@ export default function App() {
     setEditingCaption(null);
   }
 
-  // ── LIST ────────────────────────────────────────────────────────────────────
+  // ── LIST ─────────────────────────────────────────────────────────────────────
   if (screen === "list") return (
     <div style={S.root}>
       <div style={S.navBar}>
@@ -260,7 +315,9 @@ export default function App() {
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"100px 32px", textAlign:"center" }}>
             <div style={{ fontSize:64, marginBottom:16 }}>📦</div>
             <div style={{ fontSize:22, fontWeight:700, letterSpacing:-0.3, marginBottom:8 }}>No Totes Yet</div>
-            <div style={{ fontSize:15, color:C.secondaryLabel, lineHeight:1.55, maxWidth:260 }}>Tap + to create a tote, add photos, then share the QR code with anyone.</div>
+            <div style={{ fontSize:15, color:C.secondaryLabel, lineHeight:1.55, maxWidth:260 }}>
+              Tap + to create a tote, add photos, then share the QR code with anyone.
+            </div>
           </div>
         ) : (
           <div style={{ padding:"20px 16px 40px" }}>
@@ -286,7 +343,7 @@ export default function App() {
     </div>
   );
 
-  // ── ADD TOTE ────────────────────────────────────────────────────────────────
+  // ── ADD TOTE ─────────────────────────────────────────────────────────────────
   if (screen === "addTote") return (
     <div style={S.root}>
       <div style={S.navBar}>
@@ -299,17 +356,20 @@ export default function App() {
       <div style={{ padding:"32px 20px", overflowY:"auto", flex:1 }}>
         <div style={S.sectionLabel}>Tote Name</div>
         <div style={S.card}>
-          <input style={S.textField} placeholder="e.g. Winter Clothes" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus onKeyDown={(e) => e.key==="Enter"&&addTote()} />
+          <input style={S.textField} placeholder="e.g. Winter Clothes" value={newName}
+            onChange={(e) => setNewName(e.target.value)} autoFocus
+            onKeyDown={(e) => e.key==="Enter"&&addTote()} />
         </div>
         <div style={{ ...S.sectionLabel, marginTop:24 }}>Note (Optional)</div>
         <div style={S.card}>
-          <input style={S.textField} placeholder="Add a description…" value={newNote} onChange={(e) => setNewNote(e.target.value)} />
+          <input style={S.textField} placeholder="Add a description…" value={newNote}
+            onChange={(e) => setNewNote(e.target.value)} />
         </div>
       </div>
     </div>
   );
 
-  // ── QR ──────────────────────────────────────────────────────────────────────
+  // ── QR ───────────────────────────────────────────────────────────────────────
   if (screen === "qr" && current) {
     const toteUrl = `${baseUrl}?tote=${current.id}`;
     return (
@@ -338,27 +398,36 @@ export default function App() {
               Copy Link
             </button>
           </div>
+          <div style={{ marginTop:14, fontSize:13, color:C.secondaryLabel, textAlign:"center", maxWidth:270, lineHeight:1.65 }}>
+            Scanning this QR goes directly to <strong style={{ color:C.label }}>{current.name}</strong>.
+          </div>
         </div>
       </div>
     );
   }
 
-  // ── DETAIL ──────────────────────────────────────────────────────────────────
+  // ── DETAIL ───────────────────────────────────────────────────────────────────
   if (screen === "detail" && current) return (
     <div style={S.root}>
+      {/* Lightbox */}
       {lightbox !== null && photos[lightbox] && (
         <div style={{ position:"fixed", inset:0, background:"#000000F5", zIndex:999, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
-          <img src={photos[lightbox].data} style={{ maxWidth:"92vw", maxHeight:"70vh", objectFit:"contain", borderRadius:10 }} alt="" />
+          <img src={photos[lightbox].url} style={{ maxWidth:"92vw", maxHeight:"70vh", objectFit:"contain", borderRadius:10 }} alt="" />
           <div style={{ display:"flex", gap:16, marginTop:28 }}>
             <button onClick={() => { setCaptionVal(photos[lightbox].caption||""); setEditingCaption(lightbox); setLightbox(null); }}
-              style={{ background:"rgba(255,255,255,0.12)", border:"none", color:"#fff", padding:"10px 22px", borderRadius:22, fontSize:15, cursor:"pointer", fontFamily:FONT }}>✏️ Caption</button>
-            <button onClick={() => removePhoto(photos[lightbox].id)}
-              style={{ background:"rgba(255,255,255,0.12)", border:"none", color:C.destructive, padding:"10px 22px", borderRadius:22, fontSize:15, cursor:"pointer", fontFamily:FONT }}>🗑 Remove</button>
+              style={{ background:"rgba(255,255,255,0.12)", border:"none", color:"#fff", padding:"10px 22px", borderRadius:22, fontSize:15, cursor:"pointer", fontFamily:FONT }}>
+              ✏️ Caption
+            </button>
+            <button onClick={() => removePhoto(photos[lightbox])}
+              style={{ background:"rgba(255,255,255,0.12)", border:"none", color:C.destructive, padding:"10px 22px", borderRadius:22, fontSize:15, cursor:"pointer", fontFamily:FONT }}>
+              🗑 Remove
+            </button>
           </div>
           <div onClick={() => setLightbox(null)} style={{ position:"absolute", top:20, right:20, color:"rgba(255,255,255,0.7)", fontSize:18, cursor:"pointer", width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(255,255,255,0.12)", borderRadius:"50%" }}>✕</div>
         </div>
       )}
 
+      {/* Caption sheet */}
       {editingCaption !== null && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:998, display:"flex", alignItems:"flex-end" }}>
           <div style={{ background:C.bg2, borderRadius:"20px 20px 0 0", padding:"16px 20px 48px", width:"100%", boxSizing:"border-box", borderTop:`1px solid ${C.separator}` }}>
@@ -379,6 +448,7 @@ export default function App() {
       </div>
 
       <div style={{ overflowY:"auto", flex:1 }}>
+        {/* Hero */}
         <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"28px 20px 20px", textAlign:"center" }}>
           <div style={{ width:76, height:76, borderRadius:20, background:current.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:42, boxShadow:`0 8px 32px ${current.color}44` }}>📦</div>
           <div style={{ fontSize:26, fontWeight:700, letterSpacing:-0.5, marginTop:12 }}>{current.name}</div>
@@ -386,6 +456,7 @@ export default function App() {
           <div style={{ fontSize:13, color:C.tertiaryLabel, marginTop:3 }}>{photos.length} item{photos.length!==1?"s":""}</div>
         </div>
 
+        {/* Actions */}
         <div style={{ display:"flex", gap:10, padding:"0 16px 24px" }}>
           {[
             { icon:"📷", label:"Add Photos", color:C.accent,      action:() => fileRef.current.click() },
@@ -419,7 +490,7 @@ export default function App() {
             <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:2 }}>
               {photos.map((p,i) => (
                 <div key={p.id} style={{ aspectRatio:"1", overflow:"hidden", cursor:"pointer", position:"relative" }} onClick={() => setLightbox(i)}>
-                  <img src={p.data} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} alt={p.caption||""} />
+                  <img src={p.url} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} alt={p.caption||""} />
                   {p.caption && <div style={{ position:"absolute", bottom:0, left:0, right:0, background:"linear-gradient(transparent,rgba(0,0,0,0.7))", padding:"18px 6px 6px", fontSize:10, color:"#fff", fontWeight:500, lineHeight:1.3 }}>{p.caption}</div>}
                 </div>
               ))}
